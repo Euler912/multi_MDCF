@@ -90,59 +90,140 @@ elif mode == "Synthetic demo":
             D, T = demo_matrices()
             save_result(D, T, addresses, None, "synthetic demo")
 else:
+    location_mode = st.radio(
+        "How to locate the stops?",
+        ["Search addresses with ORS", "Enter verified GPS coordinates"],
+        horizontal=True,
+        help="Use GPS coordinates if the ORS geocoder resolves several addresses to the same city/street center.",
+    )
     key = api_key()
-    if st.session_state.get("geocoded_for") != tuple(addresses):
-        st.session_state.pop("candidates", None)
-        st.session_state.pop("result", None)
-    if st.session_state.get("key_for_geocoding") != key:
-        st.session_state.pop("candidates", None)
-        st.session_state.pop("result", None)
 
-    if st.button("1. Find address candidates", disabled=not key):
-        try:
-            if not key:
-                st.error("Set ORS_API_KEY first.")
-            else:
+    if st.session_state.get("last_location_mode") != location_mode:
+        st.session_state.pop("result", None)
+        st.session_state["last_location_mode"] = location_mode
+
+    if location_mode == "Enter verified GPS coordinates":
+        st.info(
+            "Open https://www.openstreetmap.org/ and locate each address on the map. "
+            "Copy its GPS latitude and longitude. Each stop needs its own position. "
+            "The ORS API key is still required to calculate driving distances."
+        )
+        st.caption("Enter GPS coordinates as latitude first, longitude second. "
+                   "Examples in Israel are around latitude 31–33, longitude 34–36.")
+        chosen = []
+        fingerprint = []
+        valid_locations = True
+        for i, address in enumerate(addresses):
+            st.write(f"**{i}. {address}**")
+            left, right = st.columns(2)
+            latitude_text = left.text_input(
+                f"Latitude (north/south) — stop {i}",
+                key=f"manual_lat_{i}",
+                placeholder="Latitude",
+            ).strip()
+            longitude_text = right.text_input(
+                f"Longitude (east/west) — stop {i}",
+                key=f"manual_lon_{i}",
+                placeholder="Longitude",
+            ).strip()
+            fingerprint.append((latitude_text, longitude_text))
+            try:
+                if not latitude_text or not longitude_text:
+                    valid_locations = False
+                    continue
+                latitude = float(latitude_text)
+                longitude = float(longitude_text)
+                if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+                    raise ValueError("Outside geographic bounds")
+                chosen.append([longitude, latitude])  # ORS uses [lon, lat]
+            except ValueError:
+                valid_locations = False
+                st.error(f"Invalid GPS coordinates at stop {i}.")
+
+        if st.session_state.get("manual_points_fingerprint") != tuple(fingerprint):
+            st.session_state.pop("result", None)
+            st.session_state["manual_points_fingerprint"] = tuple(fingerprint)
+
+        if valid_locations and len(chosen) == len(addresses):
+            st.write("**Review selected GPS coordinates before paying for an ORS request:**")
+            st.dataframe(pd.DataFrame(
+                [{"address": address, "latitude": point[1], "longitude": point[0]}
+                 for address, point in zip(addresses, chosen)]
+            ), use_container_width=True)
+            st.map(pd.DataFrame([{"lat": p[1], "lon": p[0]} for p in chosen]))
+            try:
+                validate_distinct_locations(chosen)
+            except (RoutingError, ValueError) as exc:
+                valid_locations = False
+                st.error(str(exc))
+        if st.button("Fetch ORS matrix and solve TSP (GPS)", disabled=(not key or not valid_locations)):
+            try:
+                D, T = get_distance_matrix(chosen, key)
+                save_result(D, T, addresses, chosen, "ORS live matrix (manual GPS)")
+            except (RoutingError, ValueError) as exc:
+                st.error(str(exc))
+
+    else:
+        if st.session_state.get("geocoded_for") != tuple(addresses):
+            st.session_state.pop("candidates", None)
+            st.session_state.pop("result", None)
+        if st.session_state.get("key_for_geocoding") != key:
+            st.session_state.pop("candidates", None)
+            st.session_state.pop("result", None)
+
+        if st.button("1. Find address candidates", disabled=not key):
+            try:
                 candidate_sets = [geocode_candidates(address, key) for address in addresses]
                 st.session_state["candidates"] = candidate_sets
                 st.session_state["geocoded_for"] = tuple(addresses)
                 st.session_state["key_for_geocoding"] = key
                 st.session_state.pop("result", None)
-        except (RoutingError, ValueError) as exc:
-            st.error(str(exc))
-
-    if st.session_state.get("candidates"):
-        st.subheader("Verify geocoding before requesting distances")
-        chosen = []
-        for i, (address, candidates) in enumerate(zip(addresses, st.session_state["candidates"])):
-            pick = st.selectbox(
-                f"{i}: {address}",
-                list(range(len(candidates))),
-                format_func=lambda j, cs=candidates: (
-                    f"{cs[j]['label']} — lon={cs[j]['coordinates'][0]:.6f}, "
-                    f"lat={cs[j]['coordinates'][1]:.6f}"
-                ),
-                key=f"candidate_{i}_{address}",
-            )
-            chosen.append(candidates[pick]["coordinates"])
-        st.caption("If a building number or entrance is wrong, correct the address and search again.")
-        st.write("**Chosen locations — verify these points are in Ashdod and not all the same place:**")
-        coords_df = pd.DataFrame([{"address": address, "lon": c[0], "lat": c[1]} for address, c in zip(addresses, chosen)])
-        st.dataframe(coords_df, use_container_width=True)
-        st.map(pd.DataFrame([{"lat": c[1], "lon": c[0]} for c in chosen]))
-        try:
-            validate_distinct_locations(chosen)
-            valid_locations = True
-        except (RoutingError, ValueError) as exc:
-            valid_locations = False
-            st.error(str(exc))
-        st.warning("A street/city-level match is insufficient: if a result doesn't match the house number, change the address or select another candidate.")
-        if st.button("2. Fetch ORS matrix and solve TSP", disabled=(not key or not valid_locations)):
-            try:
-                D, T = get_distance_matrix(chosen, key)
-                save_result(D, T, addresses, chosen, "ORS live matrix")
             except (RoutingError, ValueError) as exc:
                 st.error(str(exc))
+
+        if st.session_state.get("candidates"):
+            st.subheader("Verify geocoding before requesting distances")
+            st.warning(
+                "If several distinct street addresses map to one point, the ORS search "
+                "is too coarse. Switch to 'Enter verified GPS coordinates' above."
+            )
+            chosen = []
+            for i, (address, candidates) in enumerate(zip(addresses, st.session_state["candidates"])):
+                pick = st.selectbox(
+                    f"{i}: {address}",
+                    list(range(len(candidates))),
+                    format_func=lambda j, cs=candidates: (
+                        f"{cs[j]['label']} — {cs[j].get('layer', '?')}/"
+                        f"{cs[j].get('accuracy', '?')} — "
+                        f"lon={cs[j]['coordinates'][0]:.6f}, "
+                        f"lat={cs[j]['coordinates'][1]:.6f}"
+                    ),
+                    key=f"candidate_{i}_{address}",
+                )
+                chosen.append(candidates[pick]["coordinates"])
+
+            if st.session_state.get("chosen_geocodes") != tuple(tuple(p) for p in chosen):
+                st.session_state.pop("result", None)
+                st.session_state["chosen_geocodes"] = tuple(tuple(p) for p in chosen)
+
+            st.write("**Chosen locations — verify these points correspond to the real buildings:**")
+            st.dataframe(pd.DataFrame([
+                {"address": address, "lon": c[0], "lat": c[1]}
+                for address, c in zip(addresses, chosen)
+            ]), use_container_width=True)
+            st.map(pd.DataFrame([{"lat": c[1], "lon": c[0]} for c in chosen]))
+            try:
+                validate_distinct_locations(chosen)
+                valid_locations = True
+            except (RoutingError, ValueError) as exc:
+                valid_locations = False
+                st.error(str(exc))
+            if st.button("2. Fetch ORS matrix and solve TSP", disabled=(not key or not valid_locations)):
+                try:
+                    D, T = get_distance_matrix(chosen, key)
+                    save_result(D, T, addresses, chosen, "ORS live matrix (geocoded)")
+                except (RoutingError, ValueError) as exc:
+                    st.error(str(exc))
 
 if "result" in st.session_state:
     result = st.session_state["result"]
