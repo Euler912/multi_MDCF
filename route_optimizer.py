@@ -46,6 +46,8 @@ def geocode_candidates(address: str, api_key: str, size: int = 3):
     address = address.strip()
     if not address or not api_key:
         raise ValueError("A nonempty address and ORS_API_KEY are required")
+    if "*" in api_key:
+        raise RoutingError("The ORS key contains asterisks. Copy the FULL Basic Key using the Copy button at account.heigit.org; do not copy masked text.")
     try:
         response = requests.get(
             GEOCODE_URL,
@@ -54,6 +56,8 @@ def geocode_candidates(address: str, api_key: str, size: int = 3):
         )
     except requests.RequestException:
         raise RoutingError("Could not connect to ORS geocoding") from None
+    if response.status_code == 403:
+        raise RoutingError("Geocoding HTTP 403 (access disallowed): likely an incomplete/invalid ORS key. At account.heigit.org use Copy next to the Basic Key (NOT the masked asterisks). Replace ORS_API_KEY, restart Streamlit, and try again. If it persists, check the dashboard or contact HeiGIT support.")
     if response.status_code != 200:
         raise RoutingError(f"Geocoding HTTP {response.status_code}: {_error_summary(response)}")
     try:
@@ -91,6 +95,8 @@ def get_distance_matrix(coordinates: Sequence[Sequence[float]], api_key: str):
         )
     except requests.RequestException:
         raise RoutingError("Could not connect to ORS Matrix API") from None
+    if response.status_code == 403:
+        raise RoutingError("Matrix HTTP 403 (access disallowed): verify that ORS_API_KEY is the FULL key copied from the HeiGIT dashboard, then restart Streamlit. Check the account dashboard if the problem continues.")
     if response.status_code != 200:
         raise RoutingError(f"Matrix HTTP {response.status_code}: {_error_summary(response)}")
     try:
