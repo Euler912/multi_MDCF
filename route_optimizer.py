@@ -41,6 +41,31 @@ def _validate_point(point):
     return [lon, lat]
 
 
+def validate_distinct_locations(coordinates, min_distance_m: float = 15.0):
+    """Reject geocodes that represent the same physical stop.
+
+    Geocoding can return a generic city/street centroid for different addresses.
+    ORS can also snap different nearby coordinates onto the same road node.
+    """
+    locations = [_validate_point(point) for point in coordinates]
+    for i in range(len(locations)):
+        lon1, lat1 = map(math.radians, locations[i])
+        for j in range(i + 1, len(locations)):
+            lon2, lat2 = map(math.radians, locations[j])
+            dlon, dlat = lon2 - lon1, lat2 - lat1
+            a = (math.sin(dlat / 2) ** 2
+                 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2)
+            straight_distance_m = 6371000.0 * 2 * math.asin(min(1.0, math.sqrt(a)))
+            if straight_distance_m < min_distance_m:
+                raise RoutingError(
+                    f"Stops {i} and {j} were geocoded to the same/nearly same place "
+                    f"({straight_distance_m:.1f} m apart). ORS likely matched a "
+                    "street/city center instead of two buildings. Choose a more "
+                    "precise geocoding result or enter verified coordinates."
+                )
+    return locations
+
+
 def geocode_candidates(address: str, api_key: str, size: int = 3):
     """Return up to 3 candidate locations; caller MUST verify the selected address."""
     address = address.strip()
@@ -85,7 +110,7 @@ def get_distance_matrix(coordinates: Sequence[Sequence[float]], api_key: str):
         raise ValueError(f"Expected 2–{MAX_STOPS} locations")
     if not api_key:
         raise ValueError("ORS_API_KEY is missing")
-    locations = [_validate_point(point) for point in coordinates]
+    locations = validate_distinct_locations(coordinates)
     try:
         response = requests.post(
             MATRIX_URL,
@@ -111,6 +136,17 @@ def get_distance_matrix(coordinates: Sequence[Sequence[float]], api_key: str):
         if not np.isfinite(matrix).all() or (matrix < 0).any():
             raise RoutingError(f"{name} matrix has unreachable/invalid pairs")
         np.fill_diagonal(matrix, 0)
+        # Different real-world stops must not appear to be at zero driving distance.
+        # Otherwise a spurious zero-cost "optimal" tour can be returned.
+        off_diagonal = matrix[~np.eye(n, dtype=bool)]
+        if (off_diagonal <= 0).any():
+            bad = np.argwhere((matrix <= 0) & ~np.eye(n, dtype=bool))
+            i, j = map(int, bad[0])
+            raise RoutingError(
+                f"ORS returned zero {name} between DIFFERENT stops {i} and {j}. "
+                "The chosen locations may snap to the same road point. "
+                "Verify each address and its coordinates before solving TSP."
+            )
     return D, T
 
 
