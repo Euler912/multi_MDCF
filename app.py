@@ -7,7 +7,7 @@ import streamlit as st
 
 from route_optimizer import (
     RoutingError, demo_matrices, geocode_candidates,
-    get_distance_matrix, held_karp, route_total,
+    get_distance_matrix, held_karp, route_total, validate_distinct_locations,
 )
 
 st.set_page_config(page_title="RouteOptimizer | ORS TSP", page_icon="🧭", layout="wide")
@@ -43,6 +43,8 @@ def api_key():
     return st.text_input("ORS API key (not stored in GitHub)", type="password").strip()
 
 def save_result(D, T, labels, coordinates, source):
+    if coordinates is not None:
+        validate_distinct_locations(coordinates)
     matrix = D if objective.startswith("Distance") else T
     route, cost = held_karp(matrix)
     st.session_state["result"] = dict(
@@ -92,6 +94,9 @@ else:
     if st.session_state.get("geocoded_for") != tuple(addresses):
         st.session_state.pop("candidates", None)
         st.session_state.pop("result", None)
+    if st.session_state.get("key_for_geocoding") != key:
+        st.session_state.pop("candidates", None)
+        st.session_state.pop("result", None)
 
     if st.button("1. Find address candidates", disabled=not key):
         try:
@@ -101,6 +106,7 @@ else:
                 candidate_sets = [geocode_candidates(address, key) for address in addresses]
                 st.session_state["candidates"] = candidate_sets
                 st.session_state["geocoded_for"] = tuple(addresses)
+                st.session_state["key_for_geocoding"] = key
                 st.session_state.pop("result", None)
         except (RoutingError, ValueError) as exc:
             st.error(str(exc))
@@ -120,7 +126,18 @@ else:
             )
             chosen.append(candidates[pick]["coordinates"])
         st.caption("If a building number or entrance is wrong, correct the address and search again.")
-        if st.button("2. Fetch ORS matrix and solve TSP", disabled=not key):
+        st.write("**Chosen locations — verify these points are in Ashdod and not all the same place:**")
+        coords_df = pd.DataFrame([{"address": address, "lon": c[0], "lat": c[1]} for address, c in zip(addresses, chosen)])
+        st.dataframe(coords_df, use_container_width=True)
+        st.map(pd.DataFrame([{"lat": c[1], "lon": c[0]} for c in chosen]))
+        try:
+            validate_distinct_locations(chosen)
+            valid_locations = True
+        except (RoutingError, ValueError) as exc:
+            valid_locations = False
+            st.error(str(exc))
+        st.warning("A street/city-level match is insufficient: if a result doesn't match the house number, change the address or select another candidate.")
+        if st.button("2. Fetch ORS matrix and solve TSP", disabled=(not key or not valid_locations)):
             try:
                 D, T = get_distance_matrix(chosen, key)
                 save_result(D, T, addresses, chosen, "ORS live matrix")
@@ -129,7 +146,10 @@ else:
 
 if "result" in st.session_state:
     result = st.session_state["result"]
-    if result["labels"] == addresses:
+    if (result["labels"] == addresses and result["objective"] == objective
+            and (mode == "Synthetic demo") == (result["source"] == "synthetic demo")):
         show_result(result)
+    else:
+        st.info("Inputs have changed. Run the calculation again to see the matching result.")
 
 st.caption("Attribution: openrouteservice / HeiGIT; © OpenStreetMap contributors. No API key is committed.")
