@@ -2,7 +2,7 @@
 import itertools
 import unittest
 import numpy as np
-from route_optimizer import held_karp, demo_matrices, route_total, MAX_STOPS
+from route_optimizer import held_karp, demo_matrices, route_total, MAX_STOPS, validate_distinct_locations, get_distance_matrix, RoutingError
 
 
 class TSPTests(unittest.TestCase):
@@ -29,6 +29,18 @@ class TSPTests(unittest.TestCase):
                 )
                 self.assertAlmostEqual(total, exact)
                 self.assertEqual(len(route), n + 1)
+
+    def test_duplicate_geocodes_blocked_before_api_request(self):
+        # Two textually different addresses that resolve to the same coordinates.
+        coordinates = [[34.65, 31.80], [34.65, 31.80], [34.68, 31.79]]
+        with self.assertRaises(RoutingError):
+            validate_distinct_locations(coordinates)
+        with self.assertRaises(RoutingError):
+            get_distance_matrix(coordinates, "dummy-key")
+
+    def test_distinct_geocodes(self):
+        coordinates = [[34.65, 31.80], [34.66, 31.80]]
+        self.assertEqual(len(validate_distinct_locations(coordinates)), 2)
 
     def test_bad_matrix(self):
         with self.assertRaises(ValueError):
